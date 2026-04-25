@@ -44,7 +44,7 @@ Backend: `http://localhost:4000`
 Backend-ul foloseste implicit:
 
 ```text
-DATABASE_URL=postgres://authx:authx@localhost:5432/authx_vulnerable
+DATABASE_URL=postgres://authx:authx@localhost:5433/authx_vulnerable
 FRONTEND_ORIGIN=http://localhost:5173
 PORT=4000
 ```

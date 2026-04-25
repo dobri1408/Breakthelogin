@@ -79,7 +79,8 @@ export default function App() {
 
   async function handleRegister(event) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     const data = Object.fromEntries(form.entries());
 
     try {
@@ -88,7 +89,7 @@ export default function App() {
         body: JSON.stringify(data)
       });
       setMessage(result.message);
-      event.currentTarget.reset();
+      formElement.reset();
       setActiveTab("login");
     } catch (error) {
       setMessage(error.message);
@@ -146,7 +147,8 @@ export default function App() {
 
   async function handleResetPassword(event) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     const data = Object.fromEntries(form.entries());
 
     try {
@@ -155,7 +157,7 @@ export default function App() {
         body: JSON.stringify(data)
       });
       setMessage(result.message);
-      event.currentTarget.reset();
+      formElement.reset();
     } catch (error) {
       setMessage(error.message);
     }

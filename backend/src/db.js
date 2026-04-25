@@ -5,7 +5,7 @@ const { Pool } = pg;
 export const pool = new Pool({
   connectionString:
     process.env.DATABASE_URL ||
-    "postgres://authx:authx@localhost:5432/authx_vulnerable"
+    "postgres://authx:authx@localhost:5433/authx_vulnerable"
 });
 
 export async function query(text, params) {
