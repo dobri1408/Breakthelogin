@@ -1,0 +1,20 @@
+{
+  "name": "break-the-login-authx",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AuthX - versiune initiala vulnerabila pentru proiectul Break the Login.",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev --workspace backend",
+    "dev:frontend": "npm run dev --workspace frontend",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "start:backend": "npm run start --workspace backend",
+    "build:frontend": "npm run build --workspace frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

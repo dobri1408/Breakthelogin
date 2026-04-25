@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: authx-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: authx_vulnerable
+      POSTGRES_USER: authx
+      POSTGRES_PASSWORD: authx
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./database/postgres-data:/var/lib/postgresql/data
