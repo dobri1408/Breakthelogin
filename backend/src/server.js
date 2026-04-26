@@ -2,7 +2,7 @@ import 'dotenv/config';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express from 'express';
-import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import zxcvbn from 'zxcvbn';
 import { logAudit, pool, query } from './db.js';
@@ -23,6 +23,12 @@ const PASSWORD_KEY_LENGTH = 64;
 const MAX_FAILED_LOGIN_ATTEMPTS = 5;
 const ACCOUNT_LOCK_MINUTES = 15;
 const SESSION_MAX_AGE_MS = 1000 * 60 * 30;
+const RESET_TOKEN_TTL_MINUTES = 15;
+const SESSION_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'strict',
+};
 
 app.use(
   cors({
@@ -33,8 +39,16 @@ app.use(
 app.use(express.json());
 app.use(cookieParser());
 
-function createWeakSession(user) {
-  const token = Buffer.from(`${user.id}:${Date.now()}`).toString('base64');
+function invalidateUserSessions(userId) {
+  for (const [token, session] of sessions.entries()) {
+    if (session.userId === userId) {
+      sessions.delete(token);
+    }
+  }
+}
+
+function createSession(user) {
+  const token = randomBytes(32).toString('hex');
   sessions.set(token, {
     userId: user.id,
     createdAt: Date.now(),
@@ -43,8 +57,12 @@ function createWeakSession(user) {
   return token;
 }
 
-function createPredictableResetToken(email) {
-  return Buffer.from(`${email}:reset`).toString('base64');
+function createResetToken() {
+  return randomBytes(32).toString('hex');
+}
+
+function hashResetToken(token) {
+  return createHash('sha256').update(token).digest('hex');
 }
 
 function validatePasswordPolicy(password, userInputs = []) {
@@ -139,6 +157,14 @@ async function runMigrations() {
   await query(`
     ALTER TABLE users
       ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ
+  `);
+  await query(`
+    ALTER TABLE reset_tokens
+      ADD COLUMN IF NOT EXISTS used BOOLEAN NOT NULL DEFAULT false
+  `);
+  await query(`
+    ALTER TABLE reset_tokens
+      ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ
   `);
 }
 
@@ -292,13 +318,11 @@ app.post('/api/auth/login', async (req, res) => {
     [user.id],
   );
 
-  const token = createWeakSession(user);
+  invalidateUserSessions(user.id);
+  const token = createSession(user);
 
-  // V1 vulnerabil: cookie-ul nu are HttpOnly, Secure sau SameSite strict.
   res.cookie('authx_session', token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    ...SESSION_COOKIE_OPTIONS,
     maxAge: SESSION_MAX_AGE_MS,
   });
 
@@ -323,6 +347,10 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 app.post('/api/auth/logout', async (req, res) => {
+  if (req.sessionToken) {
+    sessions.delete(req.sessionToken);
+  }
+
   if (req.user) {
     await logAudit({
       userId: req.user.id,
@@ -333,12 +361,8 @@ app.post('/api/auth/logout', async (req, res) => {
     });
   }
 
-  // V1 vulnerabil: sterge cookie-ul, dar nu invalideaza token-ul din sessions.
-  res.clearCookie('authx_session');
-  return res.json({
-    message:
-      'Logout facut doar in browser; token-ul vechi ramane reutilizabil.',
-  });
+  res.clearCookie('authx_session', SESSION_COOKIE_OPTIONS);
+  return res.json({ message: 'Logout reusit. Sesiunea a fost invalidata.' });
 });
 
 app.post('/api/auth/forgot-password', async (req, res) => {
@@ -353,7 +377,6 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   ]);
   const user = result.rows[0];
 
-  // V1 vulnerabil: raspunsul confirma daca un cont exista.
   if (!user) {
     await logAudit({
       action: 'RESET_UNKNOWN_USER',
@@ -361,15 +384,20 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       resourceId: email,
       ipAddress: req.ip,
     });
-    return res.status(404).json({ message: 'Nu exista cont cu acest email.' });
+    return res.json({
+      message:
+        'Daca exista un cont pentru acest email, instructiunile de resetare au fost generate.',
+    });
   }
 
-  const token = createPredictableResetToken(user.email);
+  const token = createResetToken();
+  const tokenHash = hashResetToken(token);
 
-  await query('INSERT INTO reset_tokens (user_id, token) VALUES ($1, $2)', [
-    user.id,
-    token,
-  ]);
+  await query(
+    `INSERT INTO reset_tokens (user_id, token, expires_at)
+     VALUES ($1, $2, now() + ($3 || ' minutes')::interval)`,
+    [user.id, tokenHash, RESET_TOKEN_TTL_MINUTES],
+  );
   await logAudit({
     userId: user.id,
     action: 'RESET_TOKEN_CREATED',
@@ -379,8 +407,9 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   });
 
   return res.json({
-    message: 'Token generat. V1 il returneaza direct in raspuns.',
-    resetToken: token,
+    message:
+      'Daca exista un cont pentru acest email, instructiunile de resetare au fost generate.',
+    ...(process.env.NODE_ENV === 'production' ? {} : { resetToken: token }),
   });
 });
 
@@ -397,26 +426,42 @@ app.post('/api/auth/reset-password', async (req, res) => {
     return res.status(400).json({ message: PASSWORD_POLICY_MESSAGE });
   }
 
+  const tokenHash = hashResetToken(token);
   const result = await query(
     `SELECT rt.id, rt.user_id, u.email
      FROM reset_tokens rt
      JOIN users u ON u.id = rt.user_id
      WHERE rt.token = $1
+       AND rt.used = false
+       AND rt.expires_at > now()
      ORDER BY rt.created_at DESC
      LIMIT 1`,
-    [token],
+    [tokenHash],
   );
 
   const reset = result.rows[0];
   if (!reset) {
-    return res.status(400).json({ message: 'Token invalid.' });
+    return res.status(400).json({ message: 'Token invalid sau expirat.' });
   }
 
   const passwordHash = await hashPassword(newPassword);
-  await query('UPDATE users SET password_hash = $1 WHERE id = $2', [
-    passwordHash,
-    reset.user_id,
-  ]);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [
+      passwordHash,
+      reset.user_id,
+    ]);
+    await client.query('UPDATE reset_tokens SET used = true WHERE id = $1', [reset.id]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  invalidateUserSessions(reset.user_id);
   await logAudit({
     userId: reset.user_id,
     action: 'PASSWORD_RESET',
@@ -426,7 +471,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
   });
 
   return res.json({
-    message: `Parola pentru ${reset.email} a fost schimbata. Token-ul poate fi reutilizat in V1.`,
+    message: `Parola pentru ${reset.email} a fost schimbata.`,
   });
 });
 
