@@ -12,7 +12,6 @@ const port = Number(process.env.PORT || 4000);
 const frontendOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
 const scryptAsync = promisify(scrypt);
 
-// V1 intentionat vulnerabil: sesiunile sunt in memorie si token-ul este usor de reutilizat.
 const sessions = new Map();
 const PASSWORD_POLICY_MESSAGE = 'Parola nu respecta politica de securitate.';
 const INVALID_CREDENTIALS_MESSAGE = 'Credentiale invalide.';
