@@ -1,0 +1,6 @@
+admin@authx.local
+analyst@authx.local
+manager@authx.local
+user@authx.local
+nu-exista@authx.local
+test@authx.local

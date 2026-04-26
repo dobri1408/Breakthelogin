@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS reset_tokens (
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   token TEXT NOT NULL,
   used BOOLEAN NOT NULL DEFAULT false,
-  expires_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
