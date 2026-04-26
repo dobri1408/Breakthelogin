@@ -22,6 +22,7 @@ const PASSWORD_HASH_PREFIX = 'scrypt';
 const PASSWORD_KEY_LENGTH = 64;
 const MAX_FAILED_LOGIN_ATTEMPTS = 5;
 const ACCOUNT_LOCK_MINUTES = 15;
+const SESSION_MAX_AGE_MS = 1000 * 60 * 30;
 
 app.use(
   cors({
@@ -37,6 +38,7 @@ function createWeakSession(user) {
   sessions.set(token, {
     userId: user.id,
     createdAt: Date.now(),
+    expiresAt: Date.now() + SESSION_MAX_AGE_MS,
   });
   return token;
 }
@@ -100,6 +102,13 @@ async function currentUser(req, _res, next) {
   if (!session) {
     req.user = null;
     req.sessionToken = token || null;
+    return next();
+  }
+
+  if (session.expiresAt <= Date.now()) {
+    sessions.delete(token);
+    req.user = null;
+    req.sessionToken = token;
     return next();
   }
 
@@ -287,7 +296,10 @@ app.post('/api/auth/login', async (req, res) => {
 
   // V1 vulnerabil: cookie-ul nu are HttpOnly, Secure sau SameSite strict.
   res.cookie('authx_session', token, {
-    maxAge: 1000 * 60 * 60 * 24 * 30,
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    maxAge: SESSION_MAX_AGE_MS,
   });
 
   await logAudit({
