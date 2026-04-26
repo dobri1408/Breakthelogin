@@ -19,6 +19,8 @@ const MIN_PASSWORD_LENGTH = 10;
 const MIN_PASSWORD_SCORE = 3;
 const PASSWORD_HASH_PREFIX = 'scrypt';
 const PASSWORD_KEY_LENGTH = 64;
+const MAX_FAILED_LOGIN_ATTEMPTS = 5;
+const ACCOUNT_LOCK_MINUTES = 15;
 
 app.use(
   cors({
@@ -82,6 +84,10 @@ async function verifyPassword(password, storedPassword) {
   };
 }
 
+function isAccountLocked(user) {
+  return user.locked && user.locked_until && new Date(user.locked_until) > new Date();
+}
+
 async function currentUser(req, _res, next) {
   const authHeader = req.get('authorization') || '';
   const bearerToken = authHeader.startsWith('Bearer ')
@@ -97,7 +103,7 @@ async function currentUser(req, _res, next) {
   }
 
   const result = await query(
-    'SELECT id, email, role, created_at, locked FROM users WHERE id = $1',
+    'SELECT id, email, role, created_at, locked, locked_until FROM users WHERE id = $1',
     [session.userId],
   );
 
@@ -192,15 +198,62 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(404).json({ message: 'User inexistent.' });
   }
 
-  const passwordCheck = await verifyPassword(password, user.password_hash);
-  if (!passwordCheck.valid) {
+  if (isAccountLocked(user)) {
     await logAudit({
       userId: user.id,
-      action: 'LOGIN_FAILED_PASSWORD',
+      action: 'LOGIN_BLOCKED_LOCKED',
       resource: 'auth',
       resourceId: user.id,
       ipAddress: req.ip,
     });
+    return res.status(423).json({
+      message: 'Cont blocat temporar. Incearca mai tarziu.',
+    });
+  }
+
+  if (user.locked && user.locked_until && new Date(user.locked_until) <= new Date()) {
+    await query(
+      `UPDATE users
+       SET locked = false, failed_login_attempts = 0, locked_until = NULL
+       WHERE id = $1`,
+      [user.id],
+    );
+    user.locked = false;
+    user.failed_login_attempts = 0;
+    user.locked_until = null;
+  }
+
+  const passwordCheck = await verifyPassword(password, user.password_hash);
+  if (!passwordCheck.valid) {
+    const failedAttempts = Number(user.failed_login_attempts || 0) + 1;
+    const shouldLock = failedAttempts >= MAX_FAILED_LOGIN_ATTEMPTS;
+
+    await query(
+      `UPDATE users
+       SET failed_login_attempts = $1,
+           locked = $2,
+           locked_until = CASE
+             WHEN $2 THEN now() + ($3 || ' minutes')::interval
+             ELSE locked_until
+           END
+       WHERE id = $4`,
+      [failedAttempts, shouldLock, ACCOUNT_LOCK_MINUTES, user.id],
+    );
+
+    await logAudit({
+      userId: user.id,
+      action: shouldLock ? 'LOGIN_ACCOUNT_LOCKED' : 'LOGIN_FAILED_PASSWORD',
+      resource: 'auth',
+      resourceId: user.id,
+      ipAddress: req.ip,
+    });
+
+    if (shouldLock) {
+      return res.status(423).json({
+        message: 'Cont blocat temporar. Incearca mai tarziu.',
+      });
+    }
+
     return res.status(401).json({ message: 'Parola gresita.' });
   }
 
@@ -211,6 +264,13 @@ app.post('/api/auth/login', async (req, res) => {
       user.id,
     ]);
   }
+
+  await query(
+    `UPDATE users
+     SET failed_login_attempts = 0, locked = false, locked_until = NULL
+     WHERE id = $1`,
+    [user.id],
+  );
 
   const token = createWeakSession(user);
 

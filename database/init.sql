@@ -13,8 +13,16 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role user_role NOT NULL DEFAULT 'USER',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  locked BOOLEAN NOT NULL DEFAULT false
+  locked BOOLEAN NOT NULL DEFAULT false,
+  failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+  locked_until TIMESTAMPTZ
 );
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
 
 
 CREATE TABLE IF NOT EXISTS audit_logs (

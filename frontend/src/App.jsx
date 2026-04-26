@@ -8,6 +8,8 @@ const auditLabels = {
   LOGIN: "S-a logat",
   LOGIN_FAILED_PASSWORD: "A gresit parola",
   LOGIN_UNKNOWN_USER: "A incercat login cu user inexistent",
+  LOGIN_ACCOUNT_LOCKED: "Cont blocat dupa incercari esuate",
+  LOGIN_BLOCKED_LOCKED: "A incercat login pe cont blocat",
   LOGOUT: "A facut logout",
   RESET_TOKEN_CREATED: "A cerut resetare parola",
   RESET_UNKNOWN_USER: "A cerut resetare pentru email inexistent",
