@@ -121,6 +121,17 @@ function requireAuth(req, res, next) {
 
 app.use(currentUser);
 
+async function runMigrations() {
+  await query(`
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER NOT NULL DEFAULT 0
+  `);
+  await query(`
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ
+  `);
+}
+
 app.get('/api/health', async (_req, res) => {
   await pool.query('SELECT 1');
   res.json({ status: 'ok', database: 'connected' });
@@ -431,6 +442,13 @@ app.use((err, _req, res, _next) => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`AuthX backend vulnerabil pornit pe http://localhost:${port}`);
-});
+runMigrations()
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`AuthX backend vulnerabil pornit pe http://localhost:${port}`);
+    });
+  })
+  .catch((error) => {
+    console.error('Migrarea bazei de date a esuat.', error);
+    process.exit(1);
+  });
