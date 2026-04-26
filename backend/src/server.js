@@ -2,6 +2,7 @@ import "dotenv/config";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import express from "express";
+import zxcvbn from "zxcvbn";
 import { logAudit, pool, query } from "./db.js";
 
 const app = express();
@@ -10,6 +11,9 @@ const frontendOrigin = process.env.FRONTEND_ORIGIN || "http://localhost:5173";
 
 // V1 intentionat vulnerabil: sesiunile sunt in memorie si token-ul este usor de reutilizat.
 const sessions = new Map();
+const PASSWORD_POLICY_MESSAGE = "Parola nu respecta politica de securitate.";
+const MIN_PASSWORD_LENGTH = 10;
+const MIN_PASSWORD_SCORE = 3;
 
 app.use(
   cors({
@@ -31,6 +35,15 @@ function createWeakSession(user) {
 
 function createPredictableResetToken(email) {
   return Buffer.from(`${email}:reset`).toString("base64");
+}
+
+function validatePasswordPolicy(password, userInputs = []) {
+  if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
+    return false;
+  }
+
+  const passwordStrength = zxcvbn(password, userInputs);
+  return passwordStrength.score >= MIN_PASSWORD_SCORE;
 }
 
 async function currentUser(req, _res, next) {
@@ -75,6 +88,10 @@ app.post("/api/auth/register", async (req, res) => {
     return res.status(400).json({ message: "Email si parola sunt obligatorii." });
   }
 
+  if (!validatePasswordPolicy(password, [email])) {
+    return res.status(400).json({ message: PASSWORD_POLICY_MESSAGE });
+  }
+
   const existing = await query("SELECT id FROM users WHERE email = $1", [email]);
   if (existing.rowCount > 0) {
     await logAudit({
@@ -104,7 +121,7 @@ app.post("/api/auth/register", async (req, res) => {
   });
 
   return res.status(201).json({
-    message: "Cont creat. V1 accepta parole slabe intentionat.",
+    message: "Cont creat.",
     user: result.rows[0]
   });
 });
@@ -228,6 +245,10 @@ app.post("/api/auth/reset-password", async (req, res) => {
 
   if (!token || !newPassword) {
     return res.status(400).json({ message: "Token si parola noua sunt obligatorii." });
+  }
+
+  if (!validatePasswordPolicy(newPassword)) {
+    return res.status(400).json({ message: PASSWORD_POLICY_MESSAGE });
   }
 
   const result = await query(
