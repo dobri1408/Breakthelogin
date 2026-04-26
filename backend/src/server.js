@@ -15,6 +15,7 @@ const scryptAsync = promisify(scrypt);
 // V1 intentionat vulnerabil: sesiunile sunt in memorie si token-ul este usor de reutilizat.
 const sessions = new Map();
 const PASSWORD_POLICY_MESSAGE = 'Parola nu respecta politica de securitate.';
+const INVALID_CREDENTIALS_MESSAGE = 'Credentiale invalide.';
 const MIN_PASSWORD_LENGTH = 10;
 const MIN_PASSWORD_SCORE = 3;
 const PASSWORD_HASH_PREFIX = 'scrypt';
@@ -198,7 +199,6 @@ app.post('/api/auth/login', async (req, res) => {
   const result = await query('SELECT * FROM users WHERE email = $1', [email]);
   const user = result.rows[0];
 
-  // V1 vulnerabil: raspuns diferit pentru user inexistent.
   if (!user) {
     await logAudit({
       action: 'LOGIN_UNKNOWN_USER',
@@ -206,7 +206,7 @@ app.post('/api/auth/login', async (req, res) => {
       resourceId: email,
       ipAddress: req.ip,
     });
-    return res.status(404).json({ message: 'User inexistent.' });
+    return res.status(401).json({ message: INVALID_CREDENTIALS_MESSAGE });
   }
 
   if (isAccountLocked(user)) {
@@ -265,7 +265,7 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    return res.status(401).json({ message: 'Parola gresita.' });
+    return res.status(401).json({ message: INVALID_CREDENTIALS_MESSAGE });
   }
 
   if (passwordCheck.needsRehash) {
