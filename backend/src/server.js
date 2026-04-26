@@ -2,18 +2,23 @@ import 'dotenv/config';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express from 'express';
+import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
 import zxcvbn from 'zxcvbn';
 import { logAudit, pool, query } from './db.js';
 
 const app = express();
 const port = Number(process.env.PORT || 4000);
 const frontendOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
+const scryptAsync = promisify(scrypt);
 
 // V1 intentionat vulnerabil: sesiunile sunt in memorie si token-ul este usor de reutilizat.
 const sessions = new Map();
 const PASSWORD_POLICY_MESSAGE = 'Parola nu respecta politica de securitate.';
 const MIN_PASSWORD_LENGTH = 10;
-const MIN_PASSWORD_SCORE = 8;
+const MIN_PASSWORD_SCORE = 3;
+const PASSWORD_HASH_PREFIX = 'scrypt';
+const PASSWORD_KEY_LENGTH = 64;
 
 app.use(
   cors({
@@ -44,6 +49,37 @@ function validatePasswordPolicy(password, userInputs = []) {
 
   const passwordStrength = zxcvbn(password, userInputs);
   return passwordStrength.score >= MIN_PASSWORD_SCORE;
+}
+
+async function hashPassword(password) {
+  const salt = randomBytes(16).toString('hex');
+  const derivedKey = await scryptAsync(password, salt, PASSWORD_KEY_LENGTH);
+  return `${PASSWORD_HASH_PREFIX}$${salt}$${derivedKey.toString('hex')}`;
+}
+
+async function verifyPassword(password, storedPassword) {
+  const [algorithm, salt, storedHash] = String(storedPassword).split('$');
+
+  if (algorithm !== PASSWORD_HASH_PREFIX || !salt || !storedHash) {
+    const validLegacyPassword = storedPassword === password;
+    return { valid: validLegacyPassword, needsRehash: validLegacyPassword };
+  }
+
+  if (!/^[a-f0-9]+$/i.test(storedHash)) {
+    return { valid: false, needsRehash: false };
+  }
+
+  const storedKey = Buffer.from(storedHash, 'hex');
+  if (storedKey.length === 0) {
+    return { valid: false, needsRehash: false };
+  }
+
+  const derivedKey = await scryptAsync(password, salt, storedKey.length);
+
+  return {
+    valid: timingSafeEqual(storedKey, derivedKey),
+    needsRehash: false,
+  };
 }
 
 async function currentUser(req, _res, next) {
@@ -111,12 +147,12 @@ app.post('/api/auth/register', async (req, res) => {
     return res.status(409).json({ message: 'Utilizatorul exista deja.' });
   }
 
-  // V1 vulnerabil: parola este stocata in clar in coloana password_hash.
+  const passwordHash = await hashPassword(password);
   const result = await query(
     `INSERT INTO users (email, password_hash, role)
      VALUES ($1, $2, $3)
      RETURNING id, email, role, created_at, locked`,
-    [email, password, role],
+    [email, passwordHash, role],
   );
 
   await logAudit({
@@ -156,8 +192,8 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(404).json({ message: 'User inexistent.' });
   }
 
-  // V1 vulnerabil: comparatie directa cu parola in clar, fara hash.
-  if (user.password_hash !== password) {
+  const passwordCheck = await verifyPassword(password, user.password_hash);
+  if (!passwordCheck.valid) {
     await logAudit({
       userId: user.id,
       action: 'LOGIN_FAILED_PASSWORD',
@@ -166,6 +202,14 @@ app.post('/api/auth/login', async (req, res) => {
       ipAddress: req.ip,
     });
     return res.status(401).json({ message: 'Parola gresita.' });
+  }
+
+  if (passwordCheck.needsRehash) {
+    const upgradedHash = await hashPassword(password);
+    await query('UPDATE users SET password_hash = $1 WHERE id = $2', [
+      upgradedHash,
+      user.id,
+    ]);
   }
 
   const token = createWeakSession(user);
@@ -285,9 +329,9 @@ app.post('/api/auth/reset-password', async (req, res) => {
     return res.status(400).json({ message: 'Token invalid.' });
   }
 
-  // V1 vulnerabil: token-ul nu expira, nu este one-time si parola ramane in clar.
+  const passwordHash = await hashPassword(newPassword);
   await query('UPDATE users SET password_hash = $1 WHERE id = $2', [
-    newPassword,
+    passwordHash,
     reset.user_id,
   ]);
   await logAudit({
